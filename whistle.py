@@ -59,7 +59,8 @@ def remove_minor_frequencies(simpfreqamps, ratio):
     return [(freq, amp) for freq, amp in simpfreqamps if amp >= threshold]
 
 if __name__ == '__main__':
-    from wavy import WaveFileReader
+    from wavy import WaveFileReader, WaveFileWriter
+    from synth import VariableFrequencyWave
     import sys
     filename = sys.argv[1]
     wav = WaveFileReader(filename)
@@ -69,6 +70,8 @@ if __name__ == '__main__':
     windows = every_nth(k, windows)
     timeskip = k / float(wav.framerate)
     t = 0.0
+    writer = WaveFileWriter("output.generated.wav")
+    beep = VariableFrequencyWave(writer.rate)
     for window in windows:
         freqamps = fft(window, wav.framerate)
         simplified = simplify_frequencies(freqamps, 10)
@@ -77,4 +80,14 @@ if __name__ == '__main__':
             print >> sys.stderr, simplified
             for freq, amp in simplified:
                 print t, freq
+            beep.frequency = simplified[0][0]
+            beep.amplitude = 0.5
+            for i in range(k):
+                if beep.frequency > 100:
+                    writer.write(beep.next())
+                else:
+                    writer.write(0)
+        else:
+            for i in range(k):
+                writer.write(0.0)
         t += timeskip

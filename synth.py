@@ -15,7 +15,7 @@ def sawtooth_wave(x):
     return 4.0*x - 1.0
 
 class VariableFrequencyWave (object):
-    def __init__(self, rate, freq, amp=1.0, function=sin_wave):
+    def __init__(self, rate=None, freq=None, amp=1.0, function=sin_wave):
         self.frequency = freq
         self.amplitude = amp
         self.dt = 1.0/float(rate)
