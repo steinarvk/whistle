@@ -8,11 +8,18 @@ def merge_channels(samplesseq):
     for samples in samplesseq:
         yield average(samples)
 
+def every_nth(n, seq):
+    i = 0
+    for x in seq:
+        if not i:
+            yield x
+        i += 1
+        if i >= n:
+            i = 0
+
 def rolling_window(sampleseq, size):
-    d = collections.deque()
+    d = collections.deque(maxlen=size)
     for x in sampleseq:
-        if len(d) >= size:
-            d.popleft()
         d.append(x)
         if len(d) >= size:
             yield d
@@ -45,20 +52,29 @@ def simplify_frequencies(freqamps, threshold):
     rv.sort(key = lambda x: x[1], reverse=True)
     return rv
 
+def remove_minor_frequencies(simpfreqamps, ratio):
+    if not simpfreqamps:
+        return []
+    threshold = float(ratio) * simpfreqamps[0][1]
+    return [(freq, amp) for freq, amp in simpfreqamps if amp >= threshold]
+
 if __name__ == '__main__':
     from wavy import Wave
     import sys
     filename = sys.argv[1]
-    try:
-        skip = float(sys.argv[2])
-    except IndexError:
-        skip = 0.0
     wav = Wave(filename)
-    for i in range(int(wav.framerate * skip)):
-        wav.read()
     size = int(wav.framerate * 0.1)
-    window = rolling_window(merge_channels(wav), size).next()
-    freqamps = fft(window, wav.framerate)
-    for freq, amplitude in freqamps:
-        print freq, amplitude
-    print >> sys.stderr, simplify_frequencies(freqamps, 10)
+    windows = rolling_window(merge_channels(wav), size)
+    k = 100
+    windows = every_nth(k, windows)
+    timeskip = k / float(wav.framerate)
+    t = 0.0
+    for window in windows:
+        freqamps = fft(window, wav.framerate)
+        simplified = simplify_frequencies(freqamps, 10)
+        simplified = remove_minor_frequencies(simplified, 0.02)
+        if simplified:
+            print >> sys.stderr, simplified
+            for freq, amp in simplified:
+                print t, freq
+        t += timeskip
