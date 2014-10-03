@@ -1,0 +1,64 @@
+import collections
+import numpy
+
+def average(samples):
+    return sum(samples)/float(len(samples))
+
+def merge_channels(samplesseq):
+    for samples in samplesseq:
+        yield average(samples)
+
+def rolling_window(sampleseq, size):
+    d = collections.deque()
+    for x in sampleseq:
+        if len(d) >= size:
+            d.popleft()
+        d.append(x)
+        if len(d) >= size:
+            yield d
+
+def fft(window, sample_rate):
+    spacing = 1.0 / float(sample_rate)
+    values = numpy.fft.rfft(window)
+    freqs = numpy.fft.rfftfreq(len(window), spacing)
+    return [(freq, abs(val)) for freq, val in zip(freqs, values)]
+
+def simplify_adjacent_frequencies(freqamps):
+    rv = 0.0
+    weight = 0.0
+    for freq, amp in freqamps:
+        rv += freq
+        weight += amp
+    return rv / float(len(freqamps)), weight
+
+def simplify_frequencies(freqamps, threshold):
+    island = []
+    rv = []
+    for freq, amp in freqamps:
+        if amp > threshold:
+            amp -= threshold
+            island.append((freq, amp))
+        else:
+            if island:
+                rv.append(simplify_adjacent_frequencies(island))
+            island = []
+    rv.sort(key = lambda x: x[1], reverse=True)
+    return rv
+
+if __name__ == '__main__':
+    from wavy import Wave
+    import sys
+    filename = sys.argv[1]
+    try:
+        skip = float(sys.argv[2])
+    except IndexError:
+        skip = 0.0
+    wav = Wave(filename)
+    for i in range(int(wav.framerate * skip)):
+        wav.read()
+    size = int(wav.framerate * 0.1)
+    window = rolling_window(merge_channels(wav), size).next()
+    freqamps = fft(window, wav.framerate)
+    for freq, amplitude in freqamps:
+        print freq, amplitude
+    print >> sys.stderr, simplify_frequencies(freqamps, 10)
