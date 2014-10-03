@@ -1,7 +1,7 @@
 import wave
 import struct
 
-class Wave (object):
+class WaveFileReader (object):
     def __init__(self, filename):
         self._wave = wave.open(filename)
         self.channels = self._wave.getnchannels()
@@ -46,10 +46,49 @@ class Wave (object):
     def __exit__(self):
         self.close()
 
+class WaveFileWriter (object):
+    def __init__(self, filename, channels=1, rate=44100):
+        self._wave = wave.open(filename, "w")
+        self._wave.setsampwidth(2)
+        self._wave.setnchannels(channels)
+        self._wave.setframerate(rate)
+        self.channels = channels
+        self.rate = rate
+        self.endianness = "<"
+        self.sampleformat = "h"
+        self.sample_max = 32767
+        self.sample_min = -32768
+
+    def write(self, x):
+        if not (isinstance(x, list) or isinstance(x, tuple)):
+            x = (x,)
+        assert len(x) == self.channels
+        fmt = self.endianness + self.channels * self.sampleformat
+        data = struct.pack(fmt, *map(self._unnormalize, x))
+        self._wave.writeframes(data)
+
+    def writes(self, xs):
+        for x in xs:
+            self.write(x)
+        
+    def _unnormalize(self, sample):
+        unit = (sample + 1.0) / 2.0
+        span = self.sample_max - self.sample_min
+        return self.sample_min + span * unit
+
+    def close(self):
+        self._wave.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self):
+        self.close()
+
 if __name__ == '__main__':
     import sys
     filename = sys.argv[1]
-    with Wave(filename) as w:
+    with WaveFileReader(filename) as w:
         t = 0
         for (value,) in w:
             print t, value

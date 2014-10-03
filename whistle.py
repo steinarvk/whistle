@@ -59,10 +59,10 @@ def remove_minor_frequencies(simpfreqamps, ratio):
     return [(freq, amp) for freq, amp in simpfreqamps if amp >= threshold]
 
 if __name__ == '__main__':
-    from wavy import Wave
+    from wavy import WaveFileReader
     import sys
     filename = sys.argv[1]
-    wav = Wave(filename)
+    wav = WaveFileReader(filename)
     size = int(wav.framerate * 0.1)
     windows = rolling_window(merge_channels(wav), size)
     k = 100
