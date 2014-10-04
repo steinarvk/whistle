@@ -43,7 +43,7 @@ class WaveFileReader (object):
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, *args):
         self.close()
 
 class WaveFileWriter (object):
@@ -82,7 +82,7 @@ class WaveFileWriter (object):
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, *args):
         self.close()
 
 if __name__ == '__main__':
