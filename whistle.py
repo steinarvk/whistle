@@ -58,6 +58,9 @@ def remove_minor_frequencies(simpfreqamps, ratio):
     threshold = float(ratio) * simpfreqamps[0][1]
     return [(freq, amp) for freq, amp in simpfreqamps if amp >= threshold]
 
+def filter_frequencies(simpfreqamps, lower=120, upper=4000):
+    return [(f, a) for f, a in simpfreqamps if lower <= f <= upper]
+
 def window_amplitude(window, quantile=0.95):
     return numpy.percentile(map(abs, window), quantile*100)
 
@@ -70,6 +73,50 @@ def window_amplitude(window, quantile=0.95):
 # should be (probably because I'm a bad whistler and occasionally run out
 # of breath). leaving out the amplitude variations altogether gives a nice
 # 8-bit-style sound.
+
+def deviations_from_mean(samples, x):
+    m = numpy.mean(samples)
+    d = numpy.std(samples)
+    return (m - x) / float(d)
+
+def remove_outliers(seq, horizon, deviations=1):
+    d = collections.deque(maxlen=horizon*2+1)
+    after = []
+    for x in seq:
+        d.append(x)
+        if len(d) <= d.maxlen:
+            yield x
+        else:
+            sample = d[horizon]
+            before = d[:horizon]
+            after = d[-horizon:]
+            k = deviations_from_mean(before + after, sample)
+            if abs(k) > deviations:
+                yield numpy.mean(before + after)
+            else:
+                yield sample
+    for x in after:
+        yield x
+
+class ExpandableWindow (object):
+    def __init__(self, seq, size):
+        self.seq = seq
+        self.advance()
+
+    def _pop(self):
+        
+
+    def __iter__(self):
+        for x in self.window:
+            yield x
+    
+    def advance(self):
+        self.windo
+        
+def linear_fit(samples):
+    n = len(samples)
+    ((a,b), (errsum,), _, _, _) = numpy.polyfit(range(n), samples, 1, full=True)
+    return a, b, errsum / float(n)
 
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
@@ -85,24 +132,35 @@ if __name__ == '__main__':
     t = 0.0
     writer = WaveFileWriter("output.generated.wav")
     beep = VariableFrequencyWave(writer.rate)
+    frequencies = []
+    amplitudes = []
+    times = []
     for window in windows:
         window = list(window)
         totalamp = window_amplitude(window)
         freqamps = fft(window, wav.framerate)
         simplified = simplify_frequencies(freqamps, 10)
+        simplified = filter_frequencies(simplified)
         simplified = remove_minor_frequencies(simplified, 0.02)
+        times.append(t)
         if simplified:
-            print >> sys.stderr, t, totalamp
-            for freq, amp in simplified:
-                print t, freq
             beep.frequency = simplified[0][0]
-            beep.amplitude = min(0.75, totalamp)
-            for i in range(k):
-                if beep.frequency > 100:
-                    writer.write(beep.next())
-                else:
-                    writer.write(0)
+            beep.amplitude = totalamp
         else:
-            for i in range(k):
-                writer.write(0.0)
+            beep.frequency = beep.amplitude = 0.0
+        frequencies.append(beep.frequency)
+        amplitudes.append(beep.amplitude)
         t += timeskip
+    frequencies = remove_outliers(frequencies, 100, deviations=0.25) 
+    amplitudes = remove_outliers(amplitudes, 100, deviations=0.25) 
+    for t, frequency, amplitude in zip(times, frequencies, amplitudes):
+        print >> sys.stderr, t, amplitude
+        print t, frequency
+        beep.frequency = frequency
+        beep.amplitude = amplitude
+        for i in range(k):
+            if amplitude:
+                writer.write(beep.next())
+            else:
+                writer.write(0.0)
+
