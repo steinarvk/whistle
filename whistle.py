@@ -58,6 +58,19 @@ def remove_minor_frequencies(simpfreqamps, ratio):
     threshold = float(ratio) * simpfreqamps[0][1]
     return [(freq, amp) for freq, amp in simpfreqamps if amp >= threshold]
 
+def window_amplitude(window, quantile=0.95):
+    return numpy.percentile(map(abs, window), quantile*100)
+
+# quantile amplitude appears to be a very reliable indicator of note length.
+# for most simple notes, it is almost _entirely_ flat, stunningly so, with
+# very quick transitions in between. sometimes for a "slide" there is a
+# transition over a longer period.
+
+# the actual amplitude variations are probably _more_ pronounced than they
+# should be (probably because I'm a bad whistler and occasionally run out
+# of breath). leaving out the amplitude variations altogether gives a nice
+# 8-bit-style sound.
+
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
     from synth import VariableFrequencyWave
@@ -73,15 +86,17 @@ if __name__ == '__main__':
     writer = WaveFileWriter("output.generated.wav")
     beep = VariableFrequencyWave(writer.rate)
     for window in windows:
+        window = list(window)
+        totalamp = window_amplitude(window)
         freqamps = fft(window, wav.framerate)
         simplified = simplify_frequencies(freqamps, 10)
         simplified = remove_minor_frequencies(simplified, 0.02)
         if simplified:
-            print >> sys.stderr, simplified
+            print >> sys.stderr, t, totalamp
             for freq, amp in simplified:
                 print t, freq
             beep.frequency = simplified[0][0]
-            beep.amplitude = 0.5
+            beep.amplitude = min(0.75, totalamp)
             for i in range(k):
                 if beep.frequency > 100:
                     writer.write(beep.next())
