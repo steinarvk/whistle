@@ -1,5 +1,6 @@
 import collections
 import numpy
+import heapq
 
 def average(samples):
     return sum(samples)/float(len(samples))
@@ -77,7 +78,9 @@ def window_amplitude(window, quantile=0.95):
 def deviations_from_mean(samples, x):
     m = numpy.mean(samples)
     d = numpy.std(samples)
-    return (m - x) / float(d)
+    if d == 0:
+        d = 0.00000001
+    return abs(m - x) / float(d)
 
 def remove_outliers(seq, horizon, deviations=1):
     d = collections.deque(maxlen=horizon*2+1)
@@ -98,25 +101,49 @@ def remove_outliers(seq, horizon, deviations=1):
     for x in after:
         yield x
 
-class ExpandableWindow (object):
-    def __init__(self, seq, size):
-        self.seq = seq
-        self.advance()
-
-    def _pop(self):
-        
-
-    def __iter__(self):
-        for x in self.window:
-            yield x
-    
-    def advance(self):
-        self.windo
-        
 def linear_fit(samples):
     n = len(samples)
     ((a,b), (errsum,), _, _, _) = numpy.polyfit(range(n), samples, 1, full=True)
     return a, b, errsum / float(n)
+
+class NoteBreaks (object):
+    def __init__(self, min_length=0.0):
+        self.breaks = []
+        self.min_length = min_length
+
+    def add_break(self, t):
+        heapq.heappush(self.breaks, t)
+
+    def __iter__(self):
+        if not self.breaks:
+            return
+        q = list(self.breaks)
+        last = heapq.heappop(q)
+        yield last
+        while q:
+            x = heapq.heappop(q)
+            if x - last < self.min_length:
+                continue
+            last = x
+            yield x
+
+def find_breaks_by_delta(timeseq, windowsz, deviations=1.0):
+    import sys
+    skips = 0
+    for windows in rolling_window(timeseq, windowsz * 2):
+        if skips:
+            skips -= 1
+            continue
+        windows = list(windows)
+        old_window = [val for t, val in windows[:windowsz]]
+        new_window = [val for t, val in windows[-windowsz:]]
+        t = windows[-1][0]
+        m = numpy.mean(new_window)
+        dev = deviations_from_mean(old_window, m)
+        if dev > deviations:
+            print >> sys.stderr, "at", t, ": ", m, " is ", dev, " dev from ", numpy.mean(old_window), numpy.std(old_window)
+            skips = windowsz
+            yield t
 
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
@@ -151,16 +178,30 @@ if __name__ == '__main__':
         frequencies.append(beep.frequency)
         amplitudes.append(beep.amplitude)
         t += timeskip
-    frequencies = remove_outliers(frequencies, 100, deviations=0.25) 
-    amplitudes = remove_outliers(amplitudes, 100, deviations=0.25) 
-    for t, frequency, amplitude in zip(times, frequencies, amplitudes):
-        print >> sys.stderr, t, amplitude
-        print t, frequency
-        beep.frequency = frequency
-        beep.amplitude = amplitude
-        for i in range(k):
-            if amplitude:
-                writer.write(beep.next())
-            else:
-                writer.write(0.0)
+    frequencies = list(remove_outliers(frequencies, 100, deviations=0.25))
+    amplitudes = list(remove_outliers(amplitudes, 100, deviations=0.25))
+    with open("output.amplitude.txt", "w") as amplog, \
+             open("output.frequency.txt", "w") as freqlog, \
+             open("output.breaks.txt", "w") as breaklog:
+        for t, frequency, amplitude in zip(times, frequencies, amplitudes):
+            print >> amplog, t, amplitude
+            print >> freqlog, t, frequency
+            beep.frequency = frequency
+            beep.amplitude = amplitude
+            for i in range(k):
+                if amplitude:
+                    writer.write(beep.next())
+                else:
+                    writer.write(0.0)
+        breaks = NoteBreaks(min_length=0.05)
+        kk = 10
+        for t in find_breaks_by_delta(zip(times, amplitudes), kk, deviations=4):
+            breaks.add_break(t)
+        for t in find_breaks_by_delta(zip(times, frequencies), kk, deviations=2):
+            breaks.add_break(t)
+        for t in breaks:
+            print >> breaklog, t-0.001, 0.0
+            print >> breaklog, t, 1.0
+            print >> breaklog, t+0.001, 0.0
+        
 
