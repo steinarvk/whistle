@@ -143,7 +143,6 @@ def find_breaks_by_delta(timeseq, windowsz, deviations=1.0):
         m = numpy.mean(new_window)
         dev = deviations_from_mean(old_window, m)
         if dev > deviations:
-            print >> sys.stderr, "at", t, ": ", m, " is ", dev, " dev from ", numpy.mean(old_window), numpy.std(old_window)
             skips = windowsz
             yield t
 
@@ -216,16 +215,14 @@ def merge_piecewise_linear(segments, tolerance=0):
         threshold *= (1.0 + tolerance)
         err = segment_square_error(lastx)
         if err <= threshold:
-            print >> sys.stderr, "merging", len(last[4]), "+", len(x[4]), "=", len(lastx[4]), "with error", err, "vs", threshold
             last = lastx
         else:
-            print >> sys.stderr, "not merging", len(last[4])
             yield last
             last = x
     if last:
         yield last
 
-def snap_piecewise_linear(segments, vtol=0.06, ttol=0.02):
+def snap_piecewise_linear(segments, vtol=0.1, ttol=0.02):
     segiter = iter(segments)
     last = segiter.next()
     for x in segiter:
@@ -253,11 +250,9 @@ def midi_to_frequency(n):
 
 def segments_mapvalues(f, timeseq):
     for segment in timeseq:
-        print "in", segment[:4]
         segment = list(segment)
         t0, v0, t1, v1 = segment[:4]
         segment[:4] = t0, f(v0), t1, f(v1)
-        print "out", segment[:4]
         yield segment
 
 def snap_to_note(freq):
@@ -265,8 +260,30 @@ def snap_to_note(freq):
         return 0.0
     n = frequency_to_midi(freq)
     n = int(0.5 + n)
-    print >> sys.stderr, freq, n, midi_to_frequency(n)
     return midi_to_frequency(n)
+
+def detect_silences(timeseq, minlength, threshold, quantile=0.975):
+    window = collections.deque()
+    window.append((-minlength*2, 0.0))
+    silence = True
+    for t, a in timeseq:
+        window.append((t,abs(a)))
+        t0, t1 = window[0][0], window[-1][0]
+        dt = t1 - t0
+        if dt >= minlength:
+            value = numpy.percentile(map(lambda x: x[1], window), quantile*100)
+            if value < threshold:
+                silence = True
+            else:
+                if silence:
+                    t1 = window[-2][0]
+                    yield (t0,t1)
+                    window.clear()
+                    silence = False
+                while len(window) > 2 and (t1 - window[1][0]) > minlength:
+                    window.popleft()
+    if silence:
+        yield (t0, t1)
 
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
@@ -279,7 +296,8 @@ if __name__ == '__main__':
         freqmul = 1.0
     wav = WaveFileReader(filename)
     size = int(wav.framerate * 0.1)
-    windows = rolling_window(merge_channels(wav), size)
+    raw_samples = list(merge_channels(wav))
+    windows = rolling_window(raw_samples, size)
     k = 100
     windows = every_nth(k, windows)
     timeskip = k / float(wav.framerate)
@@ -318,7 +336,11 @@ if __name__ == '__main__':
              open("output.pw2frequency.txt", "w") as pw2freqlog, \
              open("output.pw3amplitude.txt", "w") as pw3amplog, \
              open("output.pw3frequency.txt", "w") as pw3freqlog, \
+             open("output.silences.txt", "w") as sillog, \
              open("output.breaks.txt", "w") as breaklog:
+        raw_ts = ((i / float(wav.framerate), a) for i, a in enumerate(raw_samples))
+        raw_ts = every_nth(100, raw_ts)
+        silences = list(detect_silences(raw_ts, 0.01, 0.05))
         for t, frequency, amplitude in zip(times, frequencies, amplitudes):
             print >> amplog, t, amplitude
             print >> freqlog, t, frequency
@@ -362,17 +384,22 @@ if __name__ == '__main__':
         print >> sys.stderr, "writing wave", time.time()
         t = 0.0
         beep = VariableFrequencyWave(writer.rate)
+        print silences
         for i in range(wav.total_frames):
             while pwamp and t > pwamp[0][2]:
                 del pwamp[0]
             while pwfreq and t > pwfreq[0][2]:
                 del pwfreq[0]
+            while silences and t > silences[0][1]:
+                del silences[0]
+            silent = silences and (silences[0][0] <= t <= silences[0][1])
             beep.frequency = piecewise_linear_interpolate(pwfreq, t) or 0.0
             beep.frequency *= freqmul
             beep.amplitude = piecewise_linear_interpolate(pwamp, t)
             beep.amplitude = clip(0, beep.amplitude, 1)
             print >> pw3freqlog, t, beep.frequency
             print >> pw3amplog, t, beep.amplitude
+            print >> sillog, t, 1 if silent else 0
             if beep.amplitude > 0.01 and beep.frequency > 100:
                 writer.write(beep.next())
             else:
