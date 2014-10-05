@@ -2,6 +2,7 @@ import collections
 import numpy
 import heapq
 import time
+import math
 
 def average(samples):
     return sum(samples)/float(len(samples))
@@ -244,11 +245,38 @@ def snap_piecewise_linear(segments, vtol=0.06, ttol=0.02):
     if last:
         yield last
 
+def frequency_to_midi(freq):
+    return 69 + 12 * math.log(freq/440.0, 2)
+
+def midi_to_frequency(n):
+    return 440.0 * 2 ** ((n - 69) / 12.0)
+
+def segments_mapvalues(f, timeseq):
+    for segment in timeseq:
+        print "in", segment[:4]
+        segment = list(segment)
+        t0, v0, t1, v1 = segment[:4]
+        segment[:4] = t0, f(v0), t1, f(v1)
+        print "out", segment[:4]
+        yield segment
+
+def snap_to_note(freq):
+    if freq <= 0:
+        return 0.0
+    n = frequency_to_midi(freq)
+    n = int(0.5 + n)
+    print >> sys.stderr, freq, n, midi_to_frequency(n)
+    return midi_to_frequency(n)
+
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
     from synth import VariableFrequencyWave
     import sys
     filename = sys.argv[1]
+    try:
+        freqmul = float(sys.argv[2])
+    except IndexError:
+        freqmul = 1.0
     wav = WaveFileReader(filename)
     size = int(wav.framerate * 0.1)
     windows = rolling_window(merge_channels(wav), size)
@@ -319,6 +347,7 @@ if __name__ == '__main__':
         pwfreq = list(merge_piecewise_linear(pwfreq, tolerance=0.1))
         pwfreq = list(snap_piecewise_linear(pwfreq))
         pwfreq = list(piecewise_filter_steepness(pwfreq, 5000.0))
+        pwfreq = list(segments_mapvalues(snap_to_note, pwfreq))
         for (t0, v0, t1, v1, _) in pwamp:
             print >> pw2amplog, t0, v0
             print >> pw2amplog, t1, v1
@@ -338,7 +367,8 @@ if __name__ == '__main__':
                 del pwamp[0]
             while pwfreq and t > pwfreq[0][2]:
                 del pwfreq[0]
-            beep.frequency = piecewise_linear_interpolate(pwfreq, t)
+            beep.frequency = piecewise_linear_interpolate(pwfreq, t) or 0.0
+            beep.frequency *= freqmul
             beep.amplitude = piecewise_linear_interpolate(pwamp, t)
             beep.amplitude = clip(0, beep.amplitude, 1)
             print >> pw3freqlog, t, beep.frequency
