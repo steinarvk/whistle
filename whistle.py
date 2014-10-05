@@ -1,6 +1,7 @@
 import collections
 import numpy
 import heapq
+import time
 
 def average(samples):
     return sum(samples)/float(len(samples))
@@ -145,6 +146,104 @@ def find_breaks_by_delta(timeseq, windowsz, deviations=1.0):
             skips = windowsz
             yield t
 
+def break_timeseq(timeseq, breaks):
+    breaks = collections.deque(breaks)
+    rv = []
+    for t, v in timeseq:
+        while breaks and t > breaks[0]:
+            if rv:
+                yield rv
+                rv = []
+            breaks.popleft()
+        rv.append((t,v))
+    if rv:
+        yield rv
+
+def linearize_timeseq(timeseq):
+    t0, t1 = timeseq[0][0], timeseq[-1][0]
+    ts = [t for t, v in timeseq]
+    vs = [v for t, v in timeseq]
+    a, b = numpy.polyfit(ts, vs, 1)
+    v0 = a * t0 + b
+    v1 = a * t1 + b
+    return (t0, v0, t1, v1, list(timeseq))
+
+def piecewise_linearize(timeseq, breaks):
+    for subtimeseq in break_timeseq(timeseq, breaks):
+        yield linearize_timeseq(subtimeseq)
+
+def piecewise_filter_steepness(segments, threshold):
+    for segment in segments:
+        t0, v0, t1, v1 = segment[:4] 
+        steepness = abs(v1-v0)/float(t1-t0)
+        if steepness <= threshold:
+            yield segment
+
+def segment_interpolate(segment, t):
+    t0, v0, t1, v1 = segment[:4]
+    span = (v1 - v0) / float(t1 - t0)
+    return v0 + span * (t - t0)
+
+def piecewise_linear_interpolate(segments, t):
+    # naive implementation! use sortedness
+    for segment in segments:
+        t0, v0, t1, v1 = segment[:4]
+        if t <= t1:
+            return segment_interpolate(segment, t)
+
+def clip(min_, x, max_):
+    return max(min_, min(max_, x))
+
+def segment_square_error(segment):
+    rv = 0.0
+    samples = segment[4]
+    for t, v in samples:
+        vp = segment_interpolate(segment, t)
+        rv += (v - vp) * (v - vp)
+    return rv
+
+def combine_segments(alpha, beta):
+    all_samples = alpha[4] + beta[4]
+    return linearize_timeseq(all_samples)
+
+def merge_piecewise_linear(segments, tolerance=0):
+    segiter = iter(segments)
+    last = segiter.next()
+    for x in segiter:
+        lastx = combine_segments(last, x)
+        threshold = segment_square_error(last) + segment_square_error(x)
+        threshold *= (1.0 + tolerance)
+        err = segment_square_error(lastx)
+        if err <= threshold:
+            print >> sys.stderr, "merging", len(last[4]), "+", len(x[4]), "=", len(lastx[4]), "with error", err, "vs", threshold
+            last = lastx
+        else:
+            print >> sys.stderr, "not merging", len(last[4])
+            yield last
+            last = x
+    if last:
+        yield last
+
+def snap_piecewise_linear(segments, vtol=0.06, ttol=0.02):
+    segiter = iter(segments)
+    last = segiter.next()
+    for x in segiter:
+        lastt, lastv = last[2], last[3]
+        nowt, nowv = x[0], x[1]
+        meanv = 0.5 * (lastv + nowv)
+        devv = abs(lastv - nowv) / meanv
+        merge = devv < vtol and abs(nowt - lastt) < ttol
+        if merge:
+            combinet = 0.5 * (lastt + nowt)
+            last = list(last)
+            last[2:4] = combinet, meanv
+            x = list(x)
+            x[0:2] = combinet, meanv
+        yield last
+        last = x
+    if last:
+        yield last
+
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
     from synth import VariableFrequencyWave
@@ -174,7 +273,10 @@ if __name__ == '__main__':
             beep.frequency = simplified[0][0]
             beep.amplitude = totalamp
         else:
-            beep.frequency = beep.amplitude = 0.0
+            # don't change frequency unless it's not set
+            if beep.frequency is None:
+                beep.frequency = 0.0
+            beep.amplitude = 0.0
         frequencies.append(beep.frequency)
         amplitudes.append(beep.amplitude)
         t += timeskip
@@ -182,18 +284,19 @@ if __name__ == '__main__':
     amplitudes = list(remove_outliers(amplitudes, 100, deviations=0.25))
     with open("output.amplitude.txt", "w") as amplog, \
              open("output.frequency.txt", "w") as freqlog, \
+             open("output.pwamplitude.txt", "w") as pwamplog, \
+             open("output.pwfrequency.txt", "w") as pwfreqlog, \
+             open("output.pw2amplitude.txt", "w") as pw2amplog, \
+             open("output.pw2frequency.txt", "w") as pw2freqlog, \
+             open("output.pw3amplitude.txt", "w") as pw3amplog, \
+             open("output.pw3frequency.txt", "w") as pw3freqlog, \
              open("output.breaks.txt", "w") as breaklog:
         for t, frequency, amplitude in zip(times, frequencies, amplitudes):
             print >> amplog, t, amplitude
             print >> freqlog, t, frequency
             beep.frequency = frequency
             beep.amplitude = amplitude
-            for i in range(k):
-                if amplitude:
-                    writer.write(beep.next())
-                else:
-                    writer.write(0.0)
-        breaks = NoteBreaks(min_length=0.05)
+        breaks = NoteBreaks(min_length=0.025)
         kk = 10
         for t in find_breaks_by_delta(zip(times, amplitudes), kk, deviations=4):
             breaks.add_break(t)
@@ -203,5 +306,46 @@ if __name__ == '__main__':
             print >> breaklog, t-0.001, 0.0
             print >> breaklog, t, 1.0
             print >> breaklog, t+0.001, 0.0
-        
-
+        pwamp = list(piecewise_linearize(zip(times, amplitudes), breaks))
+        pwfreq = list(piecewise_linearize(zip(times, frequencies), breaks))
+        for (t0, v0, t1, v1, _) in pwamp:
+            print >> pwamplog, t0, v0
+            print >> pwamplog, t1, v1
+        for (t0, v0, t1, v1, _) in pwfreq:
+            print >> pwfreqlog, t0, v0
+            print >> pwfreqlog, t1, v1
+        pwamp = list(merge_piecewise_linear(pwamp, tolerance=0.1))
+        pwamp = list(snap_piecewise_linear(pwamp))
+        pwfreq = list(merge_piecewise_linear(pwfreq, tolerance=0.1))
+        pwfreq = list(snap_piecewise_linear(pwfreq))
+        pwfreq = list(piecewise_filter_steepness(pwfreq, 5000.0))
+        for (t0, v0, t1, v1, _) in pwamp:
+            print >> pw2amplog, t0, v0
+            print >> pw2amplog, t1, v1
+        for (t0, v0, t1, v1, _) in pwfreq:
+            print >> pw2freqlog, t0, v0
+            print >> pw2freqlog, t1, v1
+        # corrections left to make:
+        #   - eliminate very short and very steep segments
+        #     (it's okay for these to be hard cuts)
+        #   - link up adjacent segments that seem to be joined
+        #   - snap nearly flat segments to be totally flat
+        print >> sys.stderr, "writing wave", time.time()
+        t = 0.0
+        beep = VariableFrequencyWave(writer.rate)
+        for i in range(wav.total_frames):
+            while pwamp and t > pwamp[0][2]:
+                del pwamp[0]
+            while pwfreq and t > pwfreq[0][2]:
+                del pwfreq[0]
+            beep.frequency = piecewise_linear_interpolate(pwfreq, t)
+            beep.amplitude = piecewise_linear_interpolate(pwamp, t)
+            beep.amplitude = clip(0, beep.amplitude, 1)
+            print >> pw3freqlog, t, beep.frequency
+            print >> pw3amplog, t, beep.amplitude
+            if beep.amplitude > 0.01 and beep.frequency > 100:
+                writer.write(beep.next())
+            else:
+                writer.write(0.0)
+            t += 1 / float(wav.framerate)
+        print >> sys.stderr, "wrote wave", time.time()
