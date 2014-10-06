@@ -284,6 +284,28 @@ def detect_silences(timeseq, minlength, threshold, quantile=0.975):
                     window.popleft()
     if silence:
         yield (t0, t1)
+    else:
+        yield (t1, t1 + minlength)
+
+def invert_timespans(spans):
+    last = None
+    for t0, t1 in spans:
+        if last is not None:
+            yield (last, t0)
+        last = t1
+
+def chunk_timeseries(timeseq, spans):
+    spans = collections.deque(spans)
+    t0, t1 = spans.popleft()
+    current = []
+    for t, v in timeseq:
+        if t > t1 and current:
+            yield current
+            current = []
+        while t > t1 and spans:
+            t0, t1 = spans.popleft()
+        if t0 <= t <= t1:
+            current.append((t,v))
 
 if __name__ == '__main__':
     from wavy import WaveFileReader, WaveFileWriter
@@ -303,6 +325,7 @@ if __name__ == '__main__':
     timeskip = k / float(wav.framerate)
     t = 0.0
     writer = WaveFileWriter("output.generated.wav")
+    writer2 = WaveFileWriter("output2.generated.wav")
     beep = VariableFrequencyWave(writer.rate)
     frequencies = []
     amplitudes = []
@@ -336,11 +359,14 @@ if __name__ == '__main__':
              open("output.pw2frequency.txt", "w") as pw2freqlog, \
              open("output.pw3amplitude.txt", "w") as pw3amplog, \
              open("output.pw3frequency.txt", "w") as pw3freqlog, \
-             open("output.silences.txt", "w") as sillog, \
+             open("output.pw4amplitude.txt", "w") as pw4amplog, \
+             open("output.pw4frequency.txt", "w") as pw4freqlog, \
+             open("output.noises.txt", "w") as noiselog, \
              open("output.breaks.txt", "w") as breaklog:
         raw_ts = ((i / float(wav.framerate), a) for i, a in enumerate(raw_samples))
-        raw_ts = every_nth(100, raw_ts)
-        silences = list(detect_silences(raw_ts, 0.01, 0.05))
+        raw_ts = every_nth(10, raw_ts)
+        silences = detect_silences(raw_ts, 0.0075, 0.05)
+        noises = list(invert_timespans(silences))
         for t, frequency, amplitude in zip(times, frequencies, amplitudes):
             print >> amplog, t, amplitude
             print >> freqlog, t, frequency
@@ -384,25 +410,61 @@ if __name__ == '__main__':
         print >> sys.stderr, "writing wave", time.time()
         t = 0.0
         beep = VariableFrequencyWave(writer.rate)
-        print silences
+        notes = list(noises)
         for i in range(wav.total_frames):
             while pwamp and t > pwamp[0][2]:
                 del pwamp[0]
             while pwfreq and t > pwfreq[0][2]:
                 del pwfreq[0]
-            while silences and t > silences[0][1]:
-                del silences[0]
-            silent = silences and (silences[0][0] <= t <= silences[0][1])
+            while noises and t > noises[0][1]:
+                del noises[0]
+            noisy = noises and (noises[0][0] <= t <= noises[0][1])
             beep.frequency = piecewise_linear_interpolate(pwfreq, t) or 0.0
             beep.frequency *= freqmul
             beep.amplitude = piecewise_linear_interpolate(pwamp, t)
             beep.amplitude = clip(0, beep.amplitude, 1)
             print >> pw3freqlog, t, beep.frequency
             print >> pw3amplog, t, beep.amplitude
-            print >> sillog, t, 1 if silent else 0
+            print >> noiselog, t, 1 if noisy else 0
             if beep.amplitude > 0.01 and beep.frequency > 100:
                 writer.write(beep.next())
             else:
                 writer.write(0.0)
             t += 1 / float(wav.framerate)
         print >> sys.stderr, "wrote wave", time.time()
+        tfa = chunk_timeseries(zip(times, zip(frequencies, amplitudes)), notes)
+        tfa = list(tfa)
+        for chunk in tfa:
+            mfreq = numpy.median(map(lambda x : x[1][0], chunk))
+            mamp = numpy.median(map(lambda x : x[1][1], chunk))
+            mfreq = snap_to_note(mfreq)
+            for t, (freq, amp) in chunk:
+                print >> pw4freqlog, t, mfreq
+                print >> pw4amplog, t, mamp
+
+        chunks = collections.deque(tfa)
+        beep = VariableFrequencyWave(writer2.rate)
+        t = 0.0
+        chunk = chunks[0]
+        mfreq = numpy.median(map(lambda x : x[1][0], chunk))
+        mamp = numpy.median(map(lambda x : x[1][1], chunk))
+        t0 = chunk[0][0]
+        t1 = chunk[-1][0]
+        for i in range(wav.total_frames):
+            if t > t1 and not chunks:
+                break
+            while chunks and t > t1:
+                chunk = chunks.popleft()
+                mfreq = numpy.median(map(lambda x : x[1][0], chunk))
+                mamp = numpy.median(map(lambda x : x[1][1], chunk))
+                t0 = chunk[0][0]
+                t1 = chunk[-1][0]
+            if t0 <= t <= t1:
+                beep.frequency = snap_to_note(mfreq)
+                beep.amplitude = mamp
+                writer2.write(beep.next())
+            else:
+                writer2.write(0)
+            t += 1 / float(wav.framerate)
+    writer.close()
+    writer2.close()
